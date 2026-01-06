@@ -4,9 +4,21 @@ import { cookies } from 'next/headers';
 import CryptoJS from 'crypto-js';
 import JSEncrypt from 'jsencrypt';
 
-export const runtime = 'edge';
+// Try to import 'ws' for Node.js environment support
+let WebSocketNode;
+try {
+    // Check if we are not in Edge Runtime
+    if (typeof EdgeRuntime === 'undefined') {
+        WebSocketNode = require('ws');
+    }
+} catch (e) {
+    // Ignore error if module is missing or in Edge environment
+}
 
-// FnOsClient (Edge-Compatible Implementation)
+// Remove Edge Runtime constraint to allow using Node.js capabilities if possible
+// export const runtime = 'edge'; 
+
+// FnOsClient (Hybrid Implementation)
 class FnOsClient {
     constructor(url, options = {}) {
         this.url = url;
@@ -49,48 +61,117 @@ class FnOsClient {
     }
 
     async connect() {
-        return new Promise((resolve, reject) => {
-            let wsUrl = this.url;
-            if (!wsUrl.startsWith('ws://') && !wsUrl.startsWith('wss://')) {
-                if (wsUrl.startsWith('http://')) wsUrl = wsUrl.replace('http://', 'ws://');
-                else if (wsUrl.startsWith('https://')) wsUrl = wsUrl.replace('https://', 'wss://');
-                else wsUrl = `wss://${wsUrl}`;
-            }
-            
-            if (!wsUrl.includes('/websocket')) {
-                wsUrl += '/websocket?type=main';
-            }
+        let wsUrl = this.url;
+        if (!wsUrl.startsWith('ws://') && !wsUrl.startsWith('wss://')) {
+            if (wsUrl.startsWith('http://')) wsUrl = wsUrl.replace('http://', 'ws://');
+            else if (wsUrl.startsWith('https://')) wsUrl = wsUrl.replace('https://', 'wss://');
+            else wsUrl = `wss://${wsUrl}`;
+        }
+        
+        if (!wsUrl.includes('/websocket')) {
+            wsUrl += '/websocket?type=main';
+        }
 
-            // Append cookie token to URL as query param fallback
-            // Standard WebSocket API does not support headers
-            if (this.headers['Cookie']) {
-                const match = this.headers['Cookie'].match(/entry-token=([^;]+)/);
-                if (match) {
-                    wsUrl += `&entry-token=${match[1]}`;
+        // Append cookie token to URL as query param fallback
+        // Standard WebSocket API does not support headers
+        // if (this.headers['Cookie']) {
+        //     const match = this.headers['Cookie'].match(/entry-token=([^;]+)/);
+        //     if (match) {
+        //         wsUrl += `&entry-token=${match[1]}`;
+        //     }
+        // }
+
+        console.log('Connecting to WebSocket:', wsUrl);
+
+        // Try fetch upgrade first (Cloudflare Workers/Pages specific)
+        // This allows sending custom headers like Cookie and Origin
+        try {
+            const resp = await fetch(wsUrl, {
+                headers: {
+                    'Upgrade': 'websocket',
+                    'Connection': 'Upgrade',
+                    ...this.headers
                 }
-            }
+            });
 
-            console.log('Connecting to WebSocket:', wsUrl);
-
-            try {
-                // Use global WebSocket
-                this.ws = new WebSocket(wsUrl);
+            if (resp.status === 101 && resp.webSocket) {
+                this.logger.log('WebSocket connected via fetch upgrade');
+                this.ws = resp.webSocket;
+                this.ws.accept(); 
                 
-                this.ws.onopen = () => {
-                    this.logger.log('WebSocket connected');
-                    resolve();
-                };
+                return new Promise((resolve, reject) => {
+                     this.ws.addEventListener('message', (event) => this.handleMessage(event.data));
+                     this.ws.addEventListener('close', (event) => {
+                         this.logger.log(`WebSocket closed: ${event.code} ${event.reason}`);
+                     });
+                     this.ws.addEventListener('error', (err) => {
+                         this.logger.error('WebSocket error:', err);
+                     });
+                     resolve();
+                });
+            }
+        } catch (fetchErr) {
+            this.logger.log('Fetch upgrade failed, falling back to standard WebSocket:', fetchErr.message);
+        }
 
-                this.ws.onerror = (err) => {
-                    this.logger.error('WebSocket error:', err);
-                    reject(new Error('WebSocket connection failed'));
-                };
+        return new Promise((resolve, reject) => {
+            try {
+                // Priority: 'ws' (Node.js) > global WebSocket (Edge)
+                if (WebSocketNode) {
+                    this.logger.log('Using Node.js ws module');
+                    this.ws = new WebSocketNode(wsUrl, {
+                        headers: this.headers,
+                        rejectUnauthorized: false
+                    });
 
-                this.ws.onmessage = (event) => this.handleMessage(event.data);
+                    this.ws.on('open', () => {
+                        this.logger.log('WebSocket connected (ws)');
+                        resolve();
+                    });
 
-                this.ws.onclose = () => {
-                    this.logger.log('WebSocket closed');
-                };
+                    this.ws.on('error', (err) => {
+                        this.logger.error('WebSocket error (ws):', err);
+                        reject(new Error('WebSocket connection failed'));
+                    });
+
+                    this.ws.on('message', (data) => this.handleMessage(data));
+
+                    this.ws.on('close', (code, reason) => {
+                         this.logger.log(`WebSocket closed (ws): ${code} ${reason}`);
+                    });
+                } else {
+                    // Use global WebSocket
+                    this.logger.log('Using global WebSocket');
+                    this.ws = new WebSocket(wsUrl);
+                    
+                    // Add timeout for connection
+                    const connectionTimeout = setTimeout(() => {
+                        if (this.ws && this.ws.readyState !== WebSocket.OPEN) {
+                            this.ws.close();
+                            reject(new Error('WebSocket connection timeout'));
+                        }
+                    }, 10000);
+
+                    this.ws.onopen = () => {
+                        clearTimeout(connectionTimeout);
+                        this.logger.log('WebSocket connected');
+                        resolve();
+                    };
+
+                    this.ws.onerror = (err) => {
+                        clearTimeout(connectionTimeout);
+                        // Simplify error logging
+                        this.logger.error('WebSocket connection failed');
+                        reject(new Error('WebSocket connection failed'));
+                    };
+
+                    this.ws.onmessage = (event) => this.handleMessage(event.data);
+
+                    this.ws.onclose = (event) => {
+                        clearTimeout(connectionTimeout);
+                        this.logger.log(`WebSocket closed: ${event.code} ${event.reason}`);
+                    };
+                }
             } catch (e) {
                 reject(e);
             }
@@ -358,30 +439,37 @@ export async function POST(request) {
             }
         });
 
-        await client.connect();
-        await client.login(config.username, config.password);
-        
-        const tokenRes = await client.sendRequest('appcgi.sac.entry.v1.exchangeEntryToken', {});
-        const entryToken = tokenRes.data.token;
-        
-        const listRes = await client.sendRequest('appcgi.sac.entry.v1.dockerList', {all: true});
-        console.log('Docker List:', JSON.stringify(listRes));
-        const matched = listRes.data?.list?.find(c => Number(c?.uri?.port) === Number(config.port));
-        client.close();
+        try {
+            await client.connect();
+            await client.login(config.username, config.password);
+            
+            const tokenRes = await client.sendRequest('appcgi.sac.entry.v1.exchangeEntryToken', {});
+            const entryToken = tokenRes.data.token;
+            
+            const listRes = await client.sendRequest('appcgi.sac.entry.v1.dockerList', {all: true});
+            // console.log('Docker List:', JSON.stringify(listRes));
+            const matched = listRes.data?.list?.find(c => Number(c?.uri?.port) === Number(config.port));
+            client.close();
 
-        if (matched?.uri?.fnDomain) {
-            const targetUrl = `https://${matched.uri.fnDomain}.${nasHost}`;
-            
-            // Set Cookies for Middleware to use
-            const cookieStore = cookies();
-            cookieStore.set('nas_url', targetUrl, { httpOnly: true, secure: true, sameSite: 'lax' });
-            cookieStore.set('nas_token', entryToken, { httpOnly: true, secure: true, sameSite: 'lax' });
-            
-            // Return success (no data needed, cookies are set)
-            return NextResponse.json({ success: true });
+            if (matched?.uri?.fnDomain) {
+                const targetUrl = `https://${matched.uri.fnDomain}.${nasHost}`;
+                
+                // Set Cookies for Middleware to use
+                const cookieStore = cookies();
+                cookieStore.set('nas_url', targetUrl, { httpOnly: true, secure: true, sameSite: 'lax' });
+                cookieStore.set('nas_token', entryToken, { httpOnly: true, secure: true, sameSite: 'lax' });
+                
+                // Return success (no data needed, cookies are set)
+                return NextResponse.json({ success: true });
+            }
+
+            return NextResponse.json({ success: false, error: 'App not found on port ' + config.port }, { status: 404 });
+
+        } catch (connError) {
+             console.error('NAS Connection/Login Failed:', connError.message);
+             // Return 500 but with JSON error message to avoid "Unexpected token <"
+             return NextResponse.json({ success: false, error: 'NAS Connection Failed: ' + connError.message }, { status: 500 });
         }
-
-        return NextResponse.json({ success: false, error: 'App not found on port ' + config.port }, { status: 404 });
 
     } catch (error) {
         console.error('API Error:', error);
