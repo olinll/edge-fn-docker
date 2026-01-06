@@ -3,14 +3,17 @@ import { NextResponse } from 'next/server';
 
 export function middleware(request) {
   const { pathname } = request.nextUrl;
+  
+  // DEBUG LOG
+  console.log(`[Middleware] Path: ${pathname}`);
+  const nasUrl = request.cookies.get('nas_url')?.value;
+  const nasToken = request.cookies.get('nas_token')?.value;
+  console.log(`[Middleware] Cookies - nas_url: ${nasUrl}, nas_token: ${nasToken ? 'YES' : 'NO'}`);
 
   // Skip Next.js internal requests and API routes
   if (pathname.startsWith('/_next') || pathname.startsWith('/api') || pathname.startsWith('/static')) {
     return NextResponse.next();
   }
-
-  const nasUrl = request.cookies.get('nas_url')?.value;
-  const nasToken = request.cookies.get('nas_token')?.value;
 
   // If cookies are present, proxy the request to NAS
   if (nasUrl && nasToken) {
@@ -54,14 +57,5 @@ export function middleware(request) {
 }
 
 export const config = {
-  matcher: [
-    /*
-     * Match all request paths except for the ones starting with:
-     * - api (API routes)
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico (favicon file)
-     */
-    '/((?!api|_next/static|_next/image|favicon.ico).*)',
-  ],
+  matcher: '/:path*',
 };

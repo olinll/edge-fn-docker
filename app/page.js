@@ -51,6 +51,13 @@ export default function Home() {
 
       if (data.success) {
         setStatus('Connected! Redirecting to NAS...');
+        
+        // Manual fallback: Set cookie in frontend if server-side cookie fails (e.g. cross-domain/secure issues)
+        if (data.token && data.url) {
+            document.cookie = `nas_token=${data.token}; path=/; max-age=3600; samesite=lax`;
+            document.cookie = `nas_url=${data.url}; path=/; max-age=3600; samesite=lax`;
+        }
+
         // Reload the page. The middleware will pick up the cookies and rewrite to NAS.
         setTimeout(() => {
              window.location.reload();

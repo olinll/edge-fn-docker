@@ -458,11 +458,12 @@ export async function POST(request) {
                 const cookieStore = cookies();
                 // Important: secure: false for localhost/HTTP debugging, otherwise cookies won't be set
                 const isSecure = process.env.NODE_ENV === 'production';
-                cookieStore.set('nas_url', targetUrl, { httpOnly: true, secure: isSecure, sameSite: 'lax', path: '/' });
-                cookieStore.set('nas_token', entryToken, { httpOnly: true, secure: isSecure, sameSite: 'lax', path: '/' });
+                cookieStore.set('nas_url', targetUrl, { httpOnly: false, secure: isSecure, sameSite: 'lax', path: '/' });
+                cookieStore.set('nas_token', entryToken, { httpOnly: false, secure: isSecure, sameSite: 'lax', path: '/' });
                 
                 // Return success (no data needed, cookies are set)
-                return NextResponse.json({ success: true });
+                // Also return token/url for client-side fallback
+                return NextResponse.json({ success: true, token: entryToken, url: targetUrl });
             }
 
             return NextResponse.json({ success: false, error: 'App not found on port ' + config.port }, { status: 404 });
