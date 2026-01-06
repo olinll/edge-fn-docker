@@ -456,8 +456,10 @@ export async function POST(request) {
                 
                 // Set Cookies for Middleware to use
                 const cookieStore = cookies();
-                cookieStore.set('nas_url', targetUrl, { httpOnly: true, secure: true, sameSite: 'lax' });
-                cookieStore.set('nas_token', entryToken, { httpOnly: true, secure: true, sameSite: 'lax' });
+                // Important: secure: false for localhost/HTTP debugging, otherwise cookies won't be set
+                const isSecure = process.env.NODE_ENV === 'production';
+                cookieStore.set('nas_url', targetUrl, { httpOnly: true, secure: isSecure, sameSite: 'lax', path: '/' });
+                cookieStore.set('nas_token', entryToken, { httpOnly: true, secure: isSecure, sameSite: 'lax', path: '/' });
                 
                 // Return success (no data needed, cookies are set)
                 return NextResponse.json({ success: true });

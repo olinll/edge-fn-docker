@@ -52,9 +52,9 @@ export default function Home() {
       if (data.success) {
         setStatus('Connected! Redirecting to NAS...');
         // Reload the page. The middleware will pick up the cookies and rewrite to NAS.
-        // setTimeout(() => {
-        //      window.location.reload();
-        // }, 1000);
+        setTimeout(() => {
+             window.location.reload();
+        }, 1000);
       } else {
         // Reset retry count on explicit error so user can retry manually
         sessionStorage.removeItem('nas_retry_count');
