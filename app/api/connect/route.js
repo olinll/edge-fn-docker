@@ -1,10 +1,12 @@
 
 import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers'; // Import cookies
-import WebSocket from 'ws';
-import crypto from 'crypto';
+import { cookies } from 'next/headers';
+import CryptoJS from 'crypto-js';
+import JSEncrypt from 'jsencrypt';
 
-// FnOsClient (Server-Side Implementation using Native Node.js Crypto)
+export const runtime = 'edge';
+
+// FnOsClient (Edge-Compatible Implementation)
 class FnOsClient {
     constructor(url, options = {}) {
         this.url = url;
@@ -13,9 +15,9 @@ class FnOsClient {
         this.callbacks = new Map();
         this.backId = '0000000000000000';
 
-        // Encryption keys (Matched with fnos.js)
+        // Encryption keys
         this.key = this.generateRandomString(32);
-        this.iv = crypto.randomBytes(16);
+        this.iv = CryptoJS.lib.WordArray.random(16);
         this.rsaPub = null;
         this.si = null;
         
@@ -42,10 +44,8 @@ class FnOsClient {
         return `${t}${this.backId}${e}`;
     }
 
-    // Generate a random entry-token (32 hex chars) to mimic client behavior
-    // It seems the server expects this cookie to be present even for initial connection.
     generateEntryToken() {
-        return crypto.randomBytes(16).toString('hex');
+        return CryptoJS.lib.WordArray.random(16).toString(CryptoJS.enc.Hex);
     }
 
     async connect() {
@@ -61,39 +61,39 @@ class FnOsClient {
                 wsUrl += '/websocket?type=main';
             }
 
-            console.log('Connecting to WebSocket:', wsUrl);
-
-            // Ensure headers have the token
-            if (!this.headers['Cookie'] || !this.headers['Cookie'].includes('entry-token')) {
-                const token = this.generateEntryToken();
-                const cookiePart = `entry-token=${token}`;
-                if (this.headers['Cookie']) {
-                    this.headers['Cookie'] += `; ${cookiePart}`;
-                } else {
-                    this.headers['Cookie'] = `mode=relay; language=zh; ${cookiePart}`;
+            // Append cookie token to URL as query param fallback
+            // Standard WebSocket API does not support headers
+            if (this.headers['Cookie']) {
+                const match = this.headers['Cookie'].match(/entry-token=([^;]+)/);
+                if (match) {
+                    wsUrl += `&entry-token=${match[1]}`;
                 }
             }
 
-            this.ws = new WebSocket(wsUrl, {
-                headers: this.headers,
-                rejectUnauthorized: false
-            });
+            console.log('Connecting to WebSocket:', wsUrl);
 
-            this.ws.on('open', () => {
-                this.logger.log('WebSocket connected');
-                resolve();
-            });
+            try {
+                // Use global WebSocket
+                this.ws = new WebSocket(wsUrl);
+                
+                this.ws.onopen = () => {
+                    this.logger.log('WebSocket connected');
+                    resolve();
+                };
 
-            this.ws.on('error', (err) => {
-                this.logger.error('WebSocket error:', err);
-                reject(err);
-            });
+                this.ws.onerror = (err) => {
+                    this.logger.error('WebSocket error:', err);
+                    reject(new Error('WebSocket connection failed'));
+                };
 
-            this.ws.on('message', (data) => this.handleMessage(data));
+                this.ws.onmessage = (event) => this.handleMessage(event.data);
 
-            this.ws.on('close', () => {
-                this.logger.log('WebSocket closed');
-            });
+                this.ws.onclose = () => {
+                    this.logger.log('WebSocket closed');
+                };
+            } catch (e) {
+                reject(e);
+            }
         });
     }
 
@@ -116,11 +116,10 @@ class FnOsClient {
     }
 
     getSignature(dataStr, key) {
-        // key is base64 encoded string, decode it first
-        const keyBuffer = Buffer.from(key, 'base64');
-        const hmac = crypto.createHmac('sha256', keyBuffer);
-        hmac.update(dataStr, 'utf8');
-        return hmac.digest('base64');
+        // key is base64 encoded string
+        const keyWords = CryptoJS.enc.Base64.parse(key);
+        const hmac = CryptoJS.HmacSHA256(dataStr, keyWords);
+        return hmac.toString(CryptoJS.enc.Base64);
     }
 
     getSignatureReq(data, key) {
@@ -134,48 +133,47 @@ class FnOsClient {
         return jsonStr;
     }
 
-    // AES Decrypt (Native Node.js)
     aesDecrypt(ciphertext, key, iv) {
-        // key and iv are buffers
-        const cipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
-        let decrypted = cipher.update(ciphertext, 'base64');
-        try {
-            decrypted = Buffer.concat([decrypted, cipher.final()]);
-        } catch (e) {
-            console.error('AES Decrypt Final failed:', e.message);
-            throw e;
-        }
-        return decrypted.toString('base64');
+        // Key/IV are WordArrays
+        const decrypted = CryptoJS.AES.decrypt(ciphertext, key, {
+            iv: iv,
+            mode: CryptoJS.mode.CBC,
+            padding: CryptoJS.pad.Pkcs7
+        });
+        // Decrypted data is WordArray, convert to Base64
+        return decrypted.toString(CryptoJS.enc.Base64);
     }
 
-    // Login Encrypt (Native Node.js - Aligned with fnos.js)
     loginEncrypt(dataStr) {
         // RSA Encrypt the AES Key
-        const keyBuffer = Buffer.from(this.key, 'utf8');
-
-        // Encrypt key with RSA Public Key
-        // Ensure RSA key format is correct (PEM)
+        // key is string, convert to WordArray for AES
+        const keyWords = CryptoJS.enc.Utf8.parse(this.key);
+        
         let rsaKey = this.rsaPub;
         if (!rsaKey.includes('-----BEGIN PUBLIC KEY-----')) {
              rsaKey = `-----BEGIN PUBLIC KEY-----\n${rsaKey}\n-----END PUBLIC KEY-----`;
         }
 
-        const rsaEncrypted = crypto.publicEncrypt({
-            key: rsaKey,
-            padding: crypto.constants.RSA_PKCS1_PADDING
-        }, keyBuffer).toString('base64');
+        // Use JSEncrypt for RSA
+        const encryptor = new JSEncrypt();
+        encryptor.setPublicKey(rsaKey);
+        const rsaEncrypted = encryptor.encrypt(this.key); // this.key is raw string
+
+        if (!rsaEncrypted) {
+            throw new Error('RSA Encryption failed');
+        }
 
         // AES Encrypt the data
-        const ivBuffer = this.iv;
-        const cipher = crypto.createCipheriv('aes-256-cbc', keyBuffer, ivBuffer);
-
-        let aesEncrypted = cipher.update(dataStr, 'utf8', 'base64');
-        aesEncrypted += cipher.final('base64');
+        const encrypted = CryptoJS.AES.encrypt(dataStr, keyWords, {
+            iv: this.iv,
+            mode: CryptoJS.mode.CBC,
+            padding: CryptoJS.pad.Pkcs7
+        });
+        const aesEncrypted = encrypted.toString(); // Base64 by default
 
         return {
             req: 'encrypted',
-            // reqid is NOT included at top level in fnos.js
-            iv: ivBuffer.toString('base64'),
+            iv: this.iv.toString(CryptoJS.enc.Base64),
             rsa: rsaEncrypted,
             aes: aesEncrypted
         };
@@ -236,7 +234,7 @@ class FnOsClient {
             user: username,
             password: password, 
             deviceType: 'Browser', 
-            deviceName: 'NodeJS Client',
+            deviceName: 'Edge Client',
             stay: true,
             si: this.si
         };
@@ -245,8 +243,9 @@ class FnOsClient {
         if (res.result === 'succ') {
             this.token = res.token;
             try {
-                const keyBuffer = Buffer.from(this.key, 'utf8');
-                const decryptedSecret = this.aesDecrypt(res.secret, keyBuffer, this.iv);
+                const keyWords = CryptoJS.enc.Utf8.parse(this.key);
+                // Secret is encrypted with AES key
+                const decryptedSecret = this.aesDecrypt(res.secret, keyWords, this.iv);
                 this.secret = decryptedSecret;
             } catch (e) {
                 console.log('Decrypt secret failed, using raw:', e.message);
@@ -265,12 +264,12 @@ class FnOsClient {
 
 // Helper: MD5 for signature (HTTP)
 function md5(str) {
-    return crypto.createHash('md5').update(str).digest('hex');
+    return CryptoJS.MD5(str).toString(CryptoJS.enc.Hex);
 }
 
 // Helper: SHA256 for signature (HTTP)
 function sha256(str) {
-    return crypto.createHash('sha256').update(str).digest('hex');
+    return CryptoJS.SHA256(str).toString(CryptoJS.enc.Hex);
 }
 
 function genSign(e, i) {
@@ -345,10 +344,13 @@ export async function POST(request) {
         // 1. Get NAS Host
         const nasHost = await fetchNasList(config);
         
-        // 2. Connect via WebSocket (Server-Side)
+        // 2. Connect via WebSocket (Server-Side Edge)
+        // Note: Standard WebSocket in Edge Runtime does not support custom headers in constructor.
+        // We pass the token via query parameter if possible.
         const client = new FnOsClient(nasHost, {
             headers: {
-                // Initial connection doesn't need entry-token
+                // This header might be ignored by WebSocket constructor, 
+                // but we use it to construct the query param fallback.
                 'Cookie': 'mode=relay; language=zh;entry-token=9f531e22575646b5ab5ffa3254e14006', 
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
                 'Origin': 'https://' + nasHost,
