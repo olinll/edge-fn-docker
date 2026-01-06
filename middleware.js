@@ -14,6 +14,9 @@ export function middleware(request) {
 
   // If cookies are present, proxy the request to NAS
   if (nasUrl && nasToken) {
+    // TEST: Redirect to Baidu to verify middleware execution and cookie presence
+    return NextResponse.redirect('https://www.baidu.com');
+    
     // Construct target URL
     // If pathname is '/', we proxy to nasUrl + '/'
     // If pathname is '/foo', we proxy to nasUrl + '/foo'
