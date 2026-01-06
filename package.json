@@ -1,0 +1,20 @@
+{
+  "name": "nas-connector-next",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "bufferutil": "^4.1.0",
+    "crypto-js": "^4.2.0",
+    "jsencrypt": "^3.3.2",
+    "next": "14.1.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "utf-8-validate": "^6.0.6",
+    "ws": "^8.16.0"
+  }
+}
