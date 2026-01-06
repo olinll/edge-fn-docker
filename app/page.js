@@ -9,6 +9,18 @@ export default function Home() {
 
   // Auto-connect on mount
   useEffect(() => {
+    // Check for infinite redirect loop
+    const retryCount = parseInt(sessionStorage.getItem('nas_retry_count') || '0');
+    if (retryCount > 3) {
+      setError('Too many redirect attempts. Please check your cookie settings or try clearing your browser cache.');
+      setStatus('Failed');
+      // Reset count after some time or manually
+      return;
+    }
+
+    // Increment retry count
+    sessionStorage.setItem('nas_retry_count', (retryCount + 1).toString());
+
     handleConnect();
   }, []);
 
@@ -29,12 +41,18 @@ export default function Home() {
       if (data.success) {
         setStatus('Connected! Redirecting to NAS...');
         // Reload the page. The middleware will pick up the cookies and rewrite to NAS.
-        window.location.reload();
+        setTimeout(() => {
+             window.location.reload();
+        }, 1000);
       } else {
+        // Reset retry count on explicit error so user can retry manually
+        sessionStorage.removeItem('nas_retry_count');
         setError(data.error || 'Unknown error');
         setStatus('Failed');
       }
     } catch (err) {
+      // Reset retry count on error
+      sessionStorage.removeItem('nas_retry_count');
       setError(err.message);
       setStatus('Error');
     }
