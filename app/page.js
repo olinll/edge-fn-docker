@@ -36,7 +36,18 @@ export default function Home() {
         body: JSON.stringify({}) 
       });
 
-      const data = await res.json();
+      const contentType = res.headers.get('content-type');
+      let data;
+      
+      if (contentType && contentType.includes('application/json')) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        console.error('Non-JSON response:', text);
+        // Extract a meaningful error if possible, or show snippet
+        const snippet = text.slice(0, 100);
+        throw new Error(`Server returned non-JSON response (${res.status}): ${snippet}...`);
+      }
 
       if (data.success) {
         setStatus('Connected! Redirecting to NAS...');
