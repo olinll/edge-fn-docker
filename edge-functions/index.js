@@ -2,7 +2,22 @@
 // import crypto from 'crypto'
 
 
-
+const Database = {
+    async getObject(key) {
+        const value = await nas.get(key)
+        if (value == null) {
+            return null
+        }
+        return JSON.parse(value)
+    },
+    async setObject(key, value) {
+        if (value == null) {
+            await nas.delete(key)
+        } else {
+            await nas.put(key, JSON.stringify(value))
+        }
+    }
+}
 
 
 
@@ -41,52 +56,7 @@ const CookieHelper = {
     }
 }
 
-const memoryCache = new Map();
-const pendingRequests = new Map();
 
-const ConfigManager = {
-    async getConfig(key, fetcher) {
-        // 1. Check Memory Cache
-        const cachedItem = memoryCache.get(key);
-        if (cachedItem && Date.now() < cachedItem.expireAt) {
-            return { ...cachedItem.value, hit: 'memory' };
-        }
-
-        // 2. Check Pending Requests
-        if (pendingRequests.has(key)) {
-            try {
-                const value = await pendingRequests.get(key);
-                return { ...value, hit: 'coalesced' };
-            } catch (e) {
-                throw e;
-            }
-        }
-
-        // 3. Fetch New Data
-        const promise = (async () => {
-            try {
-                const data = await fetcher();
-                const value = { origin: data.url, token: data.token };
-                // Cache for 60 seconds
-                memoryCache.set(key, {
-                    value,
-                    expireAt: Date.now() + 60 * 1000
-                });
-                return value;
-            } finally {
-                pendingRequests.delete(key);
-            }
-        })();
-
-        pendingRequests.set(key, promise);
-        try {
-            const result = await promise;
-            return { ...result, hit: 'miss' };
-        } catch (error) {
-            throw error;
-        }
-    }
-}
 
 
 
@@ -208,17 +178,27 @@ export async function onRequest(context) {
         api: env.FN_API
     }
     const ctx = {}
-    const key = config.fnId
-    ctx.config = config
 
+    ctx.config = config
+    const key = config.fnId + ':' + config.port
     try {
-        const configData =
-        // {success:true,token:'cac1d6d348c34485ac73eae8c465f281',origin:'https://9719e9b66f39-0.lin288.5ddd.com'}
-    // {success:true,token:'5681f223e51140f5b95c9dc4bdf11bdb',origin:'https://7e66dd8e82c2-1.lin288.5ddd.com'}
-    await ConfigManager.getConfig(key, () => getFnUrl(ctx));
+
+        try {
+            const cache = await Database.getObject(key)
+            if (cache) {
+                const response = await proxy(request, cache.origin, cache.token)
+                response.headers.set('x-edge-kv', 'hit')
+                return response
+            }
+        } catch (error) {
+        console.log('缓存访问出错')
+        }
+        const data = await getFnUrl(ctx);
+        const configData = { origin: data.url, token: data.token };
         
         const response = await proxy(request, configData.origin, configData.token)
-        // response.headers.set('x-edge-kv', configData.hit)
+        response.headers.set('x-edge-kv', 'miss')
+        await Database.setObject(key, {origin: ctx.url, token: ctx.token})
         return response
     } catch (error) {
         console.log('error111', error)
