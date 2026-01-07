@@ -41,6 +41,53 @@ const CookieHelper = {
     }
 }
 
+const memoryCache = new Map();
+const pendingRequests = new Map();
+
+const ConfigManager = {
+    async getConfig(key, fetcher) {
+        // 1. Check Memory Cache
+        const cachedItem = memoryCache.get(key);
+        if (cachedItem && Date.now() < cachedItem.expireAt) {
+            return { ...cachedItem.value, hit: 'memory' };
+        }
+
+        // 2. Check Pending Requests
+        if (pendingRequests.has(key)) {
+            try {
+                const value = await pendingRequests.get(key);
+                return { ...value, hit: 'coalesced' };
+            } catch (e) {
+                throw e;
+            }
+        }
+
+        // 3. Fetch New Data
+        const promise = (async () => {
+            try {
+                const data = await fetcher();
+                const value = { origin: data.url, token: data.token };
+                // Cache for 60 seconds
+                memoryCache.set(key, {
+                    value,
+                    expireAt: Date.now() + 60 * 1000
+                });
+                return value;
+            } finally {
+                pendingRequests.delete(key);
+            }
+        })();
+
+        pendingRequests.set(key, promise);
+        try {
+            const result = await promise;
+            return { ...result, hit: 'miss' };
+        } catch (error) {
+            throw error;
+        }
+    }
+}
+
 
 
 const proxy = async (request, origin, token) => {
@@ -49,32 +96,84 @@ const proxy = async (request, origin, token) => {
 
     const target = request.url.replace(requestOrigin, origin)
     const targetUrl = new URL(target)
-    const targetHeaders = new Headers(request.headers)
+    const targetHeaders = new Headers()
+    // Filter hop-by-hop headers
+    const hopByHopHeaders = [
+        'connection',
+        'keep-alive',
+        'proxy-authenticate',
+        'proxy-authorization',
+        'te',
+        'trailer',
+        'transfer-encoding',
+        'upgrade',
+        'host' // Host is set explicitly
+    ]
+
+    for (const [key, value] of request.headers) {
+        if (!hopByHopHeaders.includes(key.toLowerCase())) {
+            targetHeaders.set(key, value)
+        }
+    }
+    
     targetHeaders.set('host', targetUrl.host)
+    // Force close connection to avoid concurrency issues with connection reuse
+    targetHeaders.set('connection', 'close')
 
     const cookieObject = CookieHelper.getCookieObject(request.headers.get('cookie'))
     cookieObject['entry-token'] = token
     targetHeaders.set('cookie', CookieHelper.getCookieStr(cookieObject))
 
-    const response = await fetch(targetUrl, {
-        method: request.method,
-        headers: targetHeaders,
-        body: request.body,
-        redirect: 'manual'
-    })
+    const maxRetries = 3;
+    let lastError;
 
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            // Handle body for retries
+            let fetchBody = request.body;
+            let fetchMethod = request.method;
+            
+            // If it's not the last try, and we have a body, we might need to handle it.
+            // However, streams are single-use.
+            // For safety, we only retry idempotent requests without body (GET/HEAD)
+            // or if we can ensure body integrity (TODO: implement body buffering if needed)
+            const isIdempotent = ['GET', 'HEAD'].includes(fetchMethod.toUpperCase());
+            
+            if (i > 0 && !isIdempotent) {
+                // Cannot retry request with consumed body stream without buffering
+                throw lastError;
+            }
 
-    // if (Array.from(response.headers.keys()).length === 1) {
-    //     if (response.headers.get('content-type') === 'text/html; charset=UTF-8') {
-    //         const clone = response.clone()
-    //         const html = await clone.text()
-    //         if (html.includes('https://www.ug.link/errorPage')) {
-    //             throw new Error('访问错误')
-    //         }
-    //     }
-    // }
+            const response = await fetch(targetUrl, {
+                method: fetchMethod,
+                headers: targetHeaders,
+                body: fetchBody,
+                redirect: 'manual'
+            })
+            
+            return response;
+        } catch (error) {
+            lastError = error;
+            const isPeerError = error.message && (
+                error.message.includes('net_exception_peer_error') || 
+                error.message.includes('net_exception_closed') ||
+                error.message.includes('net_exception_timeout')
+            );
 
-    return response
+            // If it's not a network peer error, rethrow immediately
+            if (!isPeerError) throw error;
+            
+            // If it is a peer error, wait and retry
+            if (i < maxRetries - 1) {
+                // Exponential backoff: 100ms, 200ms, etc.
+                await new Promise(resolve => setTimeout(resolve, 100 * (i + 1)));
+                console.log(`Retry ${i + 1}/${maxRetries} for ${targetUrl} due to ${error.message}`);
+                continue;
+            }
+        }
+    }
+    
+    throw lastError;
 }
 
 const getFnUrl = async ctx => {
@@ -85,7 +184,7 @@ const getFnUrl = async ctx => {
         port: ctx.config.port,
         key: ctx.config.key,
     }
-    console.log('config',config)
+    // console.log('config',config)
     const aliasUrl = new URL(ctx.config.api + '/api/fn/connect')
     const response = await fetch(aliasUrl, {
         method: 'POST',
@@ -93,7 +192,7 @@ const getFnUrl = async ctx => {
         body: JSON.stringify(config)
     })
     const res = await response.json()
-    // console.log('res',res)
+    console.log('res',res)
     return res;
 }
 
@@ -106,30 +205,23 @@ export async function onRequest(context) {
         password: env.FN_PASSWORD,
         port: env.FN_PORT,
         key: env.FN_KEY,
-        api: env.FN_API,
+        api: env.FN_API
     }
     const ctx = {}
-    // const key = config.alias + ':' + config.port
-    // try {
-    //     const cache = await Database.getObject(key)
-    //     if (cache) {
-    //         const response = await proxy(request, cache.origin, cache.token)
-    //         response.headers.set('x-edge-kv', 'hit')
-    //         return response
-    //     }
-    // } catch (error) {
-    //     console.log('缓存访问出错')
-    // }
+    const key = config.fnId
     ctx.config = config
+
     try {
-        let data = await getFnUrl(ctx);
-        console.log('data',data)
-        const response1 = await proxy(request, data.url,data.token)
-        response1.headers.set('x-edge-kv', 'miss')
-        // await Database.setObject(key, {origin: ctx.proxyOrigin, token: ctx.proxyToken})
-        return response1
+        const configData =
+        // {success:true,token:'cac1d6d348c34485ac73eae8c465f281',origin:'https://9719e9b66f39-0.lin288.5ddd.com'}
+    // {success:true,token:'5681f223e51140f5b95c9dc4bdf11bdb',origin:'https://7e66dd8e82c2-1.lin288.5ddd.com'}
+    await ConfigManager.getConfig(key, () => getFnUrl(ctx));
+        
+        const response = await proxy(request, configData.origin, configData.token)
+        // response.headers.set('x-edge-kv', configData.hit)
+        return response
     } catch (error) {
-        console.log('error', error)
+        console.log('error111', error)
         return new Response('访问出错', {status: 500})
     }
 }
