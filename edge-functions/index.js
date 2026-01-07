@@ -101,19 +101,12 @@ export async function onRequest(context) {
     let request = context.request
     const env = context.env
     const config = {
-        // fnId: env.FN_ID,
-        // username: env.FN_USERNAME,
-        // password: env.FN_PASSWORD,
-        // port: env.FN_PORT,
-        // key: env.FN_KEY,
-        // api: env.FN_API,
-
-        fnId: 'lin288',
-        username: 'jianglin',
-        password: 'Lin203428',
-        port: '50002',
-        key: 'sk_random_key_147258',
-        api: 'https://fn-api1.olinl.com'
+        fnId: env.FN_ID,
+        username: env.FN_USERNAME,
+        password: env.FN_PASSWORD,
+        port: env.FN_PORT,
+        key: env.FN_KEY,
+        api: env.FN_API,
     }
     const ctx = {}
     // const key = config.alias + ':' + config.port
