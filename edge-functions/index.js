@@ -153,8 +153,9 @@ const getFnUrl = async ctx => {
         password: ctx.config.password,
         port: ctx.config.port,
         key: ctx.config.key,
+        api: ctx.config.api,
     }
-    // console.log('config',config)
+    console.log('config',config)
     const aliasUrl = new URL(ctx.config.api + '/api/fn/connect')
     const response = await fetch(aliasUrl, {
         method: 'POST',
