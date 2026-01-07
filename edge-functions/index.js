@@ -189,8 +189,12 @@ export async function onRequest(context) {
             const cache = await Database.getObject(key)
             if (cache) {
                 const response = await proxy(request, cache.origin, cache.token)
-                response.headers.set('x-edge-kv', 'hit')
-                return response
+                if (response.status === 403) {
+                    await Database.setObject(key, null)
+                } else {
+                    response.headers.set('x-edge-kv', 'hit')
+                    return response
+                }
             }
         } catch (error) {
         console.log(error)
@@ -201,10 +205,14 @@ export async function onRequest(context) {
         
         const response = await proxy(request, configData.origin, configData.token)
         response.headers.set('x-edge-kv', 'miss')
-        await Database.setObject(key, {origin: data.url, token: data.token})
+        if (response.status === 403) {
+            await Database.setObject(key, null)
+        } else {
+            await Database.setObject(key, {origin: data.url, token: data.token})
+        }
         return response
     } catch (error) {
-        console.log('error111', error)
+        console.log('error-', error)
         return new Response('访问出错'+error, {status: 500})
     }
 }
