@@ -11,6 +11,7 @@ const Database = {
         return JSON.parse(value)
     },
     async setObject(key, value) {
+        console.log('setObject', key, value)
         if (value == null) {
             await nas.delete(key)
         } else {
@@ -192,6 +193,7 @@ export async function onRequest(context) {
                 return response
             }
         } catch (error) {
+        console.log(error)
         console.log('缓存访问出错')
         }
         const data = await getFnUrl(ctx);
@@ -199,7 +201,7 @@ export async function onRequest(context) {
         
         const response = await proxy(request, configData.origin, configData.token)
         response.headers.set('x-edge-kv', 'miss')
-        await Database.setObject(key, {origin: ctx.url, token: ctx.token})
+        await Database.setObject(key, {origin: data.url, token: data.token})
         return response
     } catch (error) {
         console.log('error111', error)
